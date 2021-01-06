@@ -1,12 +1,11 @@
-""" Manage beam search info structure.
-
-    Heavily borrowed from OpenNMT-py.
-    For code in OpenNMT-py, please check the following link:
-    https://github.com/OpenNMT/OpenNMT-py/blob/master/onmt/Beam.py
+"""
+Manage beam search info structure.
+Heavily borrowed from OpenNMT-py.
+For code in OpenNMT-py, please check the following link (maybe in oldest version):
+https://github.com/OpenNMT/OpenNMT-py/blob/master/onmt/Beam.py
 """
 
 import torch
-import numpy as np
 
 class Constants():
     def __init__(self):
@@ -14,7 +13,7 @@ class Constants():
         self.UNK = 1
         self.BOS = 2
         self.EOS = 3
-        self.PAD_WORD = '[MASK]'
+        self.PAD_WORD = '[PAD]'
         self.UNK_WORD = '[UNK]'
         self.BOS_WORD = '[CLS]'
         self.EOS_WORD = '[SEP]'
@@ -76,7 +75,7 @@ class Beam():
         self.scores = best_scores
         # bestScoresId is flattened as a (beam x word) array,
         # so we need to calculate which word and beam each score came from
-        prev_k = best_scores_id / num_words
+        prev_k = best_scores_id // num_words
         self.prev_ks.append(prev_k)
         self.next_ys.append(best_scores_id - prev_k * num_words)
         # End condition is when top-of-beam is EOS.

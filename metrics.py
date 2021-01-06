@@ -19,7 +19,6 @@ def compute_metrics(x):
     metrics['MR'] = np.median(ind) + 1
     return metrics
 
-
 def print_computed_metrics(metrics):
     r1 = metrics['R1']
     r5 = metrics['R5']

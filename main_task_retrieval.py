@@ -4,43 +4,39 @@ from __future__ import unicode_literals
 from __future__ import print_function
 
 import torch
-from torch.utils.data import (RandomSampler, SequentialSampler, TensorDataset)
-
-# from torch.utils.data import DataLoader
-from data_prefetch_unitl import DataLoaderX as DataLoader       # Enhanced Loader
-
+from torch.utils.data import (SequentialSampler)
 import numpy as np
 import random
 import os
-from youcook_nopair_dataloader import Youcook_NoPair_DataLoader
-from metrics import compute_metrics, print_computed_metrics
+from metrics import compute_metrics
 import pickle
 import logging
 import time
 import argparse
-from pytorch_pretrained_bert.tokenization import BertTokenizer
-from pytorch_pretrained_bert.file_utils import PYTORCH_PRETRAINED_BERT_CACHE
-from pytorch_pretrained_bert.modeling import VLBert
-from pytorch_pretrained_bert.optimization_bert import BertAdam
-from util import parallel_apply
-
-def get_logger(filename=None):
-    logger = logging.getLogger('logger')
-    logger.setLevel(logging.DEBUG)
-    logging.basicConfig(format='%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
-                    datefmt='%m/%d/%Y %H:%M:%S',
-                    level=logging.INFO)
-    if filename is not None:
-        handler = logging.FileHandler(filename)
-        handler.setLevel(logging.DEBUG)
-        handler.setFormatter(logging.Formatter('%(asctime)s:%(levelname)s: %(message)s'))
-        logging.getLogger().addHandler(handler)
-    return logger
+from modules.tokenization import BertTokenizer
+from modules.file_utils import PYTORCH_PRETRAINED_BERT_CACHE
+from modules.modeling import UniVL
+from modules.optimization import BertAdam
+from torch.utils.data import DataLoader
+from util import parallel_apply, get_logger
+from dataloader_youcook_retrieval import Youcook_DataLoader
+from dataloader_msrvtt_retrieval import MSRVTT_DataLoader
+from dataloader_msrvtt_retrieval import MSRVTT_TrainDataLoader
+torch.distributed.init_process_group(backend="nccl")
 
 global logger
 
-def get_args(description='Youtube-Text-Video'):
+def get_args(description='UniVL on Retrieval Task'):
     parser = argparse.ArgumentParser(description=description)
+    parser.add_argument("--do_pretrain", action='store_true', help="Whether to run training.")
+    parser.add_argument("--do_train", action='store_true', help="Whether to run training.")
+    parser.add_argument("--do_eval", action='store_true', help="Whether to run eval on the dev set.")
+
+    parser.add_argument('--train_csv', type=str, default='data/youcookii_singlef_train.csv', help='')
+    parser.add_argument('--val_csv', type=str, default='data/youcookii_singlef_val.csv', help='')
+    parser.add_argument('--data_path', type=str, default='data/youcookii_caption.pickle', help='data pickle file path')
+    parser.add_argument('--features_path', type=str, default='data/youcookii_videos_feature.pickle', help='feature path')
+
     parser.add_argument('--num_thread_reader', type=int, default=1, help='')
     parser.add_argument('--lr', type=float, default=0.0001, help='initial learning rate')
     parser.add_argument('--epochs', type=int, default=20, help='upper epoch limit')
@@ -52,42 +48,23 @@ def get_args(description='Youtube-Text-Video'):
     parser.add_argument('--seed', type=int, default=42, help='random seed')
     parser.add_argument('--max_words', type=int, default=20, help='')
     parser.add_argument('--max_frames', type=int, default=100, help='')
-    parser.add_argument('--min_words', type=int, default=0, help='')
     parser.add_argument('--feature_framerate', type=int, default=1, help='')
-    parser.add_argument('--min_time', type=float, default=5.0, help='Gather small clips')
     parser.add_argument('--margin', type=float, default=0.1, help='margin for loss')
     parser.add_argument('--hard_negative_rate', type=float, default=0.5, help='rate of intra negative sample')
     parser.add_argument('--negative_weighting', type=int, default=1, help='Weight the loss for intra negative')
     parser.add_argument('--n_pair', type=int, default=1, help='Num of pair to output from data loader')
 
-    parser.add_argument('--youcook', type=int, default=0, help='Train on YouCook2 data')
-    parser.add_argument('--eval_youcook', type=int, default=0, help='Evaluate on YouCook2 data')
-    parser.add_argument('--youcook_train_csv', type=str, default='data/youcookii_singlef_train.csv', help='')
-    parser.add_argument('--youcook_val_csv', type=str, default='data/youcookii_singlef_val.csv', help='')
-    parser.add_argument('--youcook_caption_path', type=str, default='data/youcookii_caption.pickle', help='youcookii caption pickle file path')
-    parser.add_argument('--youcook_features_path_2D', type=str, default='data/youcookii_videos_feature2d', help='youcookii 2D feature path')
-    parser.add_argument('--youcook_features_path_3D', type=str, default='data/youcookii_videos_feature3d', help='youcookii 3D feature path')
-
-    parser.add_argument('--pad_token', type=str, default='[PAD]', help='')
-
-    parser.add_argument("--do_pretrain", action='store_true', help="Whether to run training.")
-    parser.add_argument("--do_train", action='store_true', help="Whether to run training.")
-    parser.add_argument("--do_eval", action='store_true', help="Whether to run eval on the dev set.")
-
     parser.add_argument("--output_dir", default=None, type=str, required=True,
                         help="The output directory where the model predictions and checkpoints will be written.")
-    parser.add_argument("--bert_model", default=None, type=str, required=True,
-                        help="Bert pre-trained model selected in the list: bert-base-uncased, bert-large-uncased, bert-base-cased, bert-large-cased, bert-base-multilingual-uncased, bert-base-multilingual-cased, bert-base-chinese.")
-    parser.add_argument("--visual_bert_model", default="visual-bert-base", type=str, required=False,
-                        help="VisualBert pre-trained model selected in the list: visual-bert-base, visual-bert-large")
-    parser.add_argument("--cross_bert_model", default="cross-bert-base", type=str, required=False,
-                        help="CrossBert pre-trained model selected in the list: cross-bert-base, cross-bert-large")
-    parser.add_argument("--decoder_bert_model", default="decoder-bert-base", type=str, required=False,
-                        help="DecoderBert pre-trained model selected in the list: decoder-bert-base, decoder-bert-large")
+    parser.add_argument("--bert_model", default="bert-base-uncased", type=str, required=True,
+                        help="Bert pre-trained model")
+    parser.add_argument("--visual_model", default="visual-base", type=str, required=False, help="Visual module")
+    parser.add_argument("--cross_model", default="cross-base", type=str, required=False, help="Cross module")
+    parser.add_argument("--decoder_model", default="decoder-base", type=str, required=False, help="Decoder module")
     parser.add_argument("--init_model", default=None, type=str, required=False, help="Initial model.")
     parser.add_argument("--do_lower_case", action='store_true', help="Set this flag if you are using an uncased model.")
     parser.add_argument("--warmup_proportion", default=0.1, type=float,
-                        help="Proportion of training to perform linear learning rate warmup for. E.g., 0.1 = 10%% of training.");
+                        help="Proportion of training to perform linear learning rate warmup for. E.g., 0.1 = 10%% of training.")
     parser.add_argument('--gradient_accumulation_steps', type=int, default=1,
                         help="Number of updates steps to accumulate before performing a backward/update pass.")
     parser.add_argument('--n_gpu', type=int, default=1, help="Changed in the execute process.")
@@ -103,28 +80,29 @@ def get_args(description='Youtube-Text-Video'):
 
     parser.add_argument("--task_type", default="retrieval", type=str, help="Point the task `retrieval` to finetune.")
     parser.add_argument("--datatype", default="youcook", type=str, help="Point the dataset `youcook` to finetune.")
+
+    parser.add_argument("--world_size", default=0, type=int, help="distribted training")
+    parser.add_argument("--local_rank", default=0, type=int, help="distribted training")
     parser.add_argument('--coef_lr', type=float, default=0.1, help='coefficient for bert branch.')
     parser.add_argument('--use_mil', action='store_true', help="Whether use MIL as Miech et. al. (2020).")
     parser.add_argument('--sampled_use_mil', action='store_true', help="Whether MIL, has a high priority than use_mil.")
 
     parser.add_argument('--text_num_hidden_layers', type=int, default=12, help="Layer NO. of text.")
-    parser.add_argument('--visual_num_hidden_layers', type=int, default=1, help="Layer NO. of visual.")
+    parser.add_argument('--visual_num_hidden_layers', type=int, default=6, help="Layer NO. of visual.")
     parser.add_argument('--cross_num_hidden_layers', type=int, default=2, help="Layer NO. of cross.")
-    parser.add_argument('--decoder_num_hidden_layers', type=int, default=1, help="Layer NO. of decoder.")
+    parser.add_argument('--decoder_num_hidden_layers', type=int, default=3, help="Layer NO. of decoder.")
 
     parser.add_argument('--train_sim_after_cross', action='store_true', help="Test retrieval after cross encoder.")
+    parser.add_argument('--expand_msrvtt_sentences', action='store_true', help="")
 
     args = parser.parse_args()
-
-    if args.sampled_use_mil:  # sample from each video, has a high priority than use_mil.
-        args.use_mil = True
 
     # Check paramenters
     if args.gradient_accumulation_steps < 1:
         raise ValueError("Invalid gradient_accumulation_steps parameter: {}, should be >= 1".format(
             args.gradient_accumulation_steps))
-    if not args.do_pretrain and not args.do_train and not args.do_eval:
-        raise ValueError("At least one of `do_pretrain` or `do_train` or `do_eval` must be True.")
+    if not args.do_train and not args.do_eval:
+        raise ValueError("At least one of `do_train` or `do_eval` must be True.")
 
     args.batch_size = int(args.batch_size / args.gradient_accumulation_steps)
 
@@ -142,17 +120,27 @@ def set_seed_logger(args):
     torch.backends.cudnn.benchmark = False
     torch.backends.cudnn.deterministic = True
 
+    world_size = torch.distributed.get_world_size()
+    torch.cuda.set_device(args.local_rank)
+    args.world_size = world_size
+
     if not os.path.exists(args.output_dir):
-        os.makedirs(args.output_dir)
+        os.makedirs(args.output_dir, exist_ok=True)
 
     logger = get_logger(os.path.join(args.output_dir, "log.txt"))
-    logger.info("Effective parameters:")
-    for key in sorted(args.__dict__):
-        logger.info("  <<< {}: {}".format(key, args.__dict__[key]))
 
-def init_device(args):
+    if args.local_rank == 0:
+        logger.info("Effective parameters:")
+        for key in sorted(args.__dict__):
+            logger.info("  <<< {}: {}".format(key, args.__dict__[key]))
+
+    return args
+
+def init_device(args, local_rank):
     global logger
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu", local_rank)
+
     n_gpu = torch.cuda.device_count()
     logger.info("device: {} n_gpu: {}".format(device, n_gpu))
     args.n_gpu = n_gpu
@@ -163,7 +151,7 @@ def init_device(args):
 
     return device, n_gpu
 
-def init_model(args, device, n_gpu):
+def init_model(args, device, n_gpu, local_rank):
 
     if args.init_model:
         model_state_dict = torch.load(args.init_model, map_location='cpu')
@@ -172,24 +160,14 @@ def init_model(args, device, n_gpu):
 
     # Prepare model
     cache_dir = args.cache_dir if args.cache_dir else os.path.join(str(PYTORCH_PRETRAINED_BERT_CACHE), 'distributed')
-    model = VLBert.from_pretrained(args.bert_model, args.visual_bert_model, args.cross_bert_model, args.decoder_bert_model,
+    model = UniVL.from_pretrained(args.bert_model, args.visual_model, args.cross_model, args.decoder_model,
                                    cache_dir=cache_dir, state_dict=model_state_dict, task_config=args)
 
     model.to(device)
 
-    # Before we do anything with models, we want to ensure that we get fp16 execution of torch.einsum if args.fp16 is set.
-    # Otherwise it'll default to "promote" mode, and we'll get fp32 operations. Note that running `--fp16_opt_level="O2"` will
-    # remove the need for this code, but it is still valid.
-    if args.fp16:
-        try:
-            import apex
-            apex.amp.register_half_function(torch, 'einsum')
-        except ImportError:
-            raise ImportError("Please install apex from https://www.github.com/nvidia/apex to use fp16 training.")
-
     return model
 
-def prep_optimizer(args, model, num_train_optimization_steps, device, n_gpu, coef_lr=1.0):
+def prep_optimizer(args, model, num_train_optimization_steps, device, n_gpu, local_rank, coef_lr=1.):
 
     if hasattr(model, 'module'):
         model = model.module
@@ -212,72 +190,49 @@ def prep_optimizer(args, model, num_train_optimization_steps, device, n_gpu, coe
         {'params': [p for n, p in decay_bert_param_tp], 'weight_decay': 0.0, 'lr': args.lr * coef_lr},
         {'params': [p for n, p in decay_nobert_param_tp], 'weight_decay': 0.0}
     ]
+
     scheduler = None
     optimizer = BertAdam(optimizer_grouped_parameters, lr=args.lr, warmup=args.warmup_proportion,
                          schedule='warmup_linear', t_total=num_train_optimization_steps, weight_decay=0.01,
                          max_grad_norm=1.0)
 
-    if args.fp16:
-        try:
-            from apex import amp
-        except ImportError:
-            raise ImportError("Please install apex from https://www.github.com/nvidia/apex to use fp16 training.")
-        model, optimizer = amp.initialize(model, optimizer, opt_level=args.fp16_opt_level)
-
-    # multi-gpu training (should be after apex fp16 initialization)
-    if n_gpu > 1:
-        model = torch.nn.DataParallel(model)
+    model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[local_rank],
+                                                      output_device=local_rank, find_unused_parameters=True)
 
     return optimizer, scheduler, model
 
 def dataloader_youcook_train(args, tokenizer):
-    logger.info('Loading captions: {}'.format(args.youcook_caption_path))
-    caption = pickle.load(open(args.youcook_caption_path, 'rb'))
-    logger.info('Done, caption length: {}'.format(len(caption)))
-
-    args.n_pair = 1
-    youcook_dataset = Youcook_NoPair_DataLoader(
-        csv=args.youcook_train_csv,
-        features_path=args.youcook_features_path_2D,
-        features_path_3D=args.youcook_features_path_3D,
-        caption=caption,
-        min_time=args.min_time,
+    youcook_dataset = Youcook_DataLoader(
+        csv=args.train_csv,
+        data_path=args.data_path,
+        features_path=args.features_path,
         max_words=args.max_words,
-        min_words=args.min_words,
         feature_framerate=args.feature_framerate,
         tokenizer=tokenizer,
-        n_pair=args.n_pair,
-        pad_token=args.pad_token,
         max_frames=args.max_frames,
     )
 
+    train_sampler = torch.utils.data.distributed.DistributedSampler(youcook_dataset)
     dataloader = DataLoader(
         youcook_dataset,
-        batch_size=args.batch_size,
+        batch_size=args.batch_size // args.n_gpu,
         num_workers=args.num_thread_reader,
-        shuffle=True,
+        pin_memory=False,
+        shuffle=(train_sampler is None),
+        sampler=train_sampler,
         drop_last=True,
     )
 
-    return dataloader, len(youcook_dataset)
+    return dataloader, len(youcook_dataset), train_sampler
 
 def dataloader_youcook_test(args, tokenizer):
-    logger.info('Loading captions: {}'.format(args.youcook_caption_path))
-    caption = pickle.load(open(args.youcook_caption_path, 'rb'))
-    logger.info('Done, caption length: {}'.format(len(caption)))
-
-    youcook_testset = Youcook_NoPair_DataLoader(
-        csv=args.youcook_val_csv,
-        features_path=args.youcook_features_path_2D,
-        features_path_3D=args.youcook_features_path_3D,
-        caption=caption,
-        min_time=args.min_time,
+    youcook_testset = Youcook_DataLoader(
+        csv=args.val_csv,
+        data_path=args.data_path,
+        features_path=args.features_path,
         max_words=args.max_words,
-        min_words=args.min_words,
         feature_framerate=args.feature_framerate,
         tokenizer=tokenizer,
-        n_pair=-1,
-        pad_token=args.pad_token,
         max_frames=args.max_frames,
     )
 
@@ -293,6 +248,49 @@ def dataloader_youcook_test(args, tokenizer):
 
     return dataloader_youcook, len(youcook_testset)
 
+def dataloader_msrvtt_train(args, tokenizer):
+    msrvtt_dataset = MSRVTT_TrainDataLoader(
+        csv_path=args.train_csv,
+        json_path=args.data_path,
+        features_path=args.features_path,
+        max_words=args.max_words,
+        feature_framerate=args.feature_framerate,
+        tokenizer=tokenizer,
+        max_frames=args.max_frames,
+        unfold_sentences=args.expand_msrvtt_sentences,
+    )
+
+    train_sampler = torch.utils.data.distributed.DistributedSampler(msrvtt_dataset)
+    dataloader = DataLoader(
+        msrvtt_dataset,
+        batch_size=args.batch_size // args.n_gpu,
+        num_workers=args.num_thread_reader,
+        pin_memory=False,
+        shuffle=(train_sampler is None),
+        sampler=train_sampler,
+        drop_last=True,
+    )
+
+    return dataloader, len(msrvtt_dataset), train_sampler
+
+def dataloader_msrvtt_test(args, tokenizer):
+    msrvtt_testset = MSRVTT_DataLoader(
+        csv_path=args.val_csv,
+        features_path=args.features_path,
+        max_words=args.max_words,
+        feature_framerate=args.feature_framerate,
+        tokenizer=tokenizer,
+        max_frames=args.max_frames,
+    )
+    dataloader_msrvtt = DataLoader(
+        msrvtt_testset,
+        batch_size=args.batch_size_val,
+        num_workers=args.num_thread_reader,
+        shuffle=False,
+        drop_last=False,
+    )
+    return dataloader_msrvtt, len(msrvtt_testset)
+
 def save_model(epoch, args, model, type_name=""):
     # Only save the model it-self
     model_to_save = model.module if hasattr(model, 'module') else model
@@ -307,10 +305,11 @@ def load_model(epoch, args, n_gpu, device, model_file=None):
         model_file = os.path.join(args.output_dir, "pytorch_model.bin.{}".format(epoch))
     if os.path.exists(model_file):
         model_state_dict = torch.load(model_file, map_location='cpu')
-        logger.info("Model loaded from %s", model_file)
+        if args.local_rank == 0:
+            logger.info("Model loaded from %s", model_file)
         # Prepare model
         cache_dir = args.cache_dir if args.cache_dir else os.path.join(str(PYTORCH_PRETRAINED_BERT_CACHE), 'distributed')
-        model = VLBert.from_pretrained(args.bert_model, args.visual_bert_model, args.cross_bert_model, args.decoder_bert_model,
+        model = UniVL.from_pretrained(args.bert_model, args.visual_model, args.cross_model, args.decoder_model,
                                        cache_dir=cache_dir, state_dict=model_state_dict, task_config=args)
 
         model.to(device)
@@ -318,24 +317,18 @@ def load_model(epoch, args, n_gpu, device, model_file=None):
         model = None
     return model
 
-def train_epoch(epoch, args, model, train_dataloader, device, n_gpu, optimizer, scheduler, global_step):
+def train_epoch(epoch, args, model, train_dataloader, device, n_gpu, optimizer, scheduler, global_step, local_rank=0):
     global logger
     torch.cuda.empty_cache()
     model.train()
-    log_step = 100
+    log_step = args.n_display
     start_time = time.time()
     total_loss = 0
-
-    if args.fp16:
-        try:
-            from apex import amp
-        except ImportError:
-            raise ImportError("Please install apex from https://www.github.com/nvidia/apex to use fp16 training.")
 
     for step, batch in enumerate(train_dataloader):
         if n_gpu == 1:
             # multi-gpu does scattering it-self
-            batch = tuple(t.to(device) for t in batch)
+            batch = tuple(t.to(device=device, non_blocking=True) for t in batch)
 
         input_ids, input_mask, segment_ids, video, video_mask, \
         pairs_masked_text, pairs_token_labels, masked_video, video_labels_index = batch
@@ -348,19 +341,12 @@ def train_epoch(epoch, args, model, train_dataloader, device, n_gpu, optimizer, 
         if args.gradient_accumulation_steps > 1:
             loss = loss / args.gradient_accumulation_steps
 
-        if args.fp16:
-            with amp.scale_loss(loss, optimizer) as scaled_loss:
-                scaled_loss.backward()
-        else:
-            loss.backward()
+        loss.backward()
 
         total_loss += float(loss)
         if (step + 1) % args.gradient_accumulation_steps == 0:
 
-            if args.fp16:
-                torch.nn.utils.clip_grad_norm_(amp.master_params(optimizer), 1.0)
-            else:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
 
             if scheduler is not None:
                 scheduler.step()  # Update learning rate schedule
@@ -369,10 +355,11 @@ def train_epoch(epoch, args, model, train_dataloader, device, n_gpu, optimizer, 
             optimizer.zero_grad()
 
             global_step += 1
-            if global_step % log_step == 0:
+            if global_step % log_step == 0 and local_rank == 0:
                 logger.info("Epoch: %d/%s, Step: %d/%d, Lr: %s, Loss: %f, Time/step: %f", epoch + 1,
                             args.epochs, step + 1,
-                            len(train_dataloader), "-".join([str('%.6f'%itm) for itm in sorted(list(set(optimizer.get_lr())))]), loss,
+                            len(train_dataloader), "-".join([str('%.6f'%itm) for itm in sorted(list(set(optimizer.get_lr())))]),
+                            float(loss) * args.gradient_accumulation_steps,
                             (time.time() - start_time) / (log_step * args.gradient_accumulation_steps))
                 start_time = time.time()
 
@@ -418,7 +405,6 @@ def eval_epoch(args, model, test_dataloader, device, n_gpu):
 
             print("{}/{}\r".format(bid, len(test_dataloader)), end="")
 
-        start_time = time.time()
         if n_gpu > 1:
             device_ids = list(range(n_gpu))
             batch_list_t_splits = []
@@ -455,7 +441,6 @@ def eval_epoch(args, model, test_dataloader, device, n_gpu):
                 sim_matrix += parallel_outputs[idx]
         else:
             sim_matrix = _run_on_single_gpu(model, batch_list, batch_list, batch_sequence_output_list, batch_visual_output_list)
-        logger.info("%f" % (time.time() - start_time))
 
     sim_matrix = np.concatenate(tuple(sim_matrix), axis=0)
     metrics = compute_metrics(sim_matrix)
@@ -468,62 +453,65 @@ def eval_epoch(args, model, test_dataloader, device, n_gpu):
 
 DATALOADER_DICT = {}
 DATALOADER_DICT["youcook"] = {"train":dataloader_youcook_train, "val":dataloader_youcook_test}
+DATALOADER_DICT["msrvtt"] = {"train":dataloader_msrvtt_train, "val":dataloader_msrvtt_test}
 
 def main():
     global logger
     args = get_args()
-    set_seed_logger(args)
-    device, n_gpu = init_device(args)
+    args = set_seed_logger(args)
+    device, n_gpu = init_device(args, args.local_rank)
 
     tokenizer = BertTokenizer.from_pretrained(args.bert_model, do_lower_case=args.do_lower_case)
+
+    assert  args.task_type == "retrieval"
+    model = init_model(args, device, n_gpu, args.local_rank)
+
+    assert args.datatype in DATALOADER_DICT
+    test_dataloader, test_length = DATALOADER_DICT[args.datatype]["val"](args, tokenizer)
+    if args.local_rank == 0:
+        logger.info("***** Running test *****")
+        logger.info("  Num examples = %d", test_length)
+        logger.info("  Batch size = %d", args.batch_size_val)
+        logger.info("  Num steps = %d", len(test_dataloader))
+
     if args.do_train:
-        args.task_type = "retrieval"
-    model = init_model(args, device, n_gpu)
-
-    datatype = args.datatype
-    assert datatype in DATALOADER_DICT
-    test_dataloader, test_length = DATALOADER_DICT[datatype]["val"](args, tokenizer)
-    logger.info("***** Running test *****")
-    logger.info("  Num examples = %d", test_length)
-    logger.info("  Batch size = %d", args.batch_size_val)
-    logger.info("  Num steps = %d", len(test_dataloader))
-
-    if args.do_pretrain:
-        raise NotImplementedError("Deleted~ no use")
-    elif args.do_train:
-
-        train_dataloader, train_length = DATALOADER_DICT[datatype]["train"](args, tokenizer)
+        train_dataloader, train_length, train_sampler = DATALOADER_DICT[args.datatype]["train"](args, tokenizer)
         num_train_optimization_steps = (int(len(train_dataloader) + args.gradient_accumulation_steps - 1)
                                         / args.gradient_accumulation_steps) * args.epochs
 
-        coef_lr = 0.1
+        coef_lr = args.coef_lr
         if args.init_model:
             coef_lr = 1.0
-        optimizer, scheduler, model = prep_optimizer(args, model, num_train_optimization_steps, device, n_gpu, coef_lr=coef_lr)
+        optimizer, scheduler, model = prep_optimizer(args, model, num_train_optimization_steps, device, n_gpu, args.local_rank, coef_lr=coef_lr)
 
-        logger.info("***** Running training *****")
-        logger.info("  Num examples = %d", train_length)
-        logger.info("  Batch size = %d", args.batch_size)
-        logger.info("  Num steps = %d", num_train_optimization_steps)
+        if args.local_rank == 0:
+            logger.info("***** Running training *****")
+            logger.info("  Num examples = %d", train_length)
+            logger.info("  Batch size = %d", args.batch_size)
+            logger.info("  Num steps = %d", num_train_optimization_steps * args.gradient_accumulation_steps)
 
         best_score = 0.00001
         best_output_model_file = None
         global_step = 0
         for epoch in range(args.epochs):
+            train_sampler.set_epoch(epoch)
             tr_loss, global_step = train_epoch(epoch, args, model, train_dataloader, device, n_gpu, optimizer,
-                                               scheduler, global_step)
-            logger.info("Epoch %d/%s Finished, Train Loss: %f", epoch + 1, args.epochs, tr_loss)
-            output_model_file = save_model(epoch, args, model, type_name="")
+                                               scheduler, global_step, local_rank=args.local_rank)
+            if args.local_rank == 0:
+                logger.info("Epoch %d/%s Finished, Train Loss: %f", epoch + 1, args.epochs, tr_loss)
+                output_model_file = save_model(epoch, args, model, type_name="")
 
-            R1 = eval_epoch(args, model, test_dataloader, device, n_gpu)
-            if best_score <= R1:
-                best_score = R1
-                best_output_model_file = output_model_file
-            logger.info("The best model is: {}, the R1 is: {:.4f}".format(best_output_model_file, best_score))
-        model = load_model(-1, args, n_gpu, device, model_file=best_output_model_file)
-        eval_epoch(args, model, test_dataloader, device, n_gpu)
+                R1 = eval_epoch(args, model, test_dataloader, device, n_gpu)
+                if best_score <= R1:
+                    best_score = R1
+                    best_output_model_file = output_model_file
+                logger.info("The best model is: {}, the R1 is: {:.4f}".format(best_output_model_file, best_score))
+        if args.local_rank == 0:
+            model = load_model(-1, args, n_gpu, device, model_file=best_output_model_file)
+            eval_epoch(args, model, test_dataloader, device, n_gpu)
     elif args.do_eval:
-        eval_epoch(args, model, test_dataloader, device, n_gpu)
+        if args.local_rank == 0:
+            eval_epoch(args, model, test_dataloader, device, n_gpu)
 
 if __name__ == "__main__":
     main()

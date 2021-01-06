@@ -7,11 +7,9 @@ from torch.utils.data import Dataset
 import pandas as pd
 import os
 import numpy as np
-import re
 import random
-import io
 
-class Youtube_Transcript_DataLoader(Dataset):
+class Youtube_DataLoader(Dataset):
     """
     Youtube dataset loader.
     Note: Use transcript as caption, for mask decoder pretrain task.
@@ -21,16 +19,13 @@ class Youtube_Transcript_DataLoader(Dataset):
             self,
             csv,
             features_path,
-            caption,
+            data_dict,
             tokenizer,
             min_time=10.0,
-            features_path_3D=None,
             feature_framerate=1.0,
-            feature_framerate_3D=24.0 / 16.0,
             max_words=30,
             min_words=0,
-            n_pair=-1,          # -1 for test
-            pad_token="[PAD]",
+            n_pair=-1,
             max_frames=100,
             with_long_context=True,
             use_mil=False,
@@ -43,24 +38,16 @@ class Youtube_Transcript_DataLoader(Dataset):
         Args:
         """
         self.csv = pd.read_csv(csv)
-        self.features_path_2D = features_path
-        self.features_path_3D = features_path_3D
-        self.caption = caption
+        self.features_path = features_path
+        self.data_dict = data_dict
         self.min_time = min_time
         self.feature_framerate = feature_framerate
-        self.feature_framerate_3D = feature_framerate_3D
         self.max_words = max_words
         self.max_frames = max_frames
         self.min_words = min_words
         self.tokenizer = tokenizer
         self.n_pair = n_pair
-        self.pad_token = pad_token
-        self.fps = {'2d': feature_framerate, '3d': feature_framerate_3D}
-        self.feature_path = {'2d': features_path}
-        if features_path_3D != '':
-            self.feature_path['3d'] = features_path_3D
         self.with_long_context = with_long_context
-
         self.feature_size = video_dim
 
         self.only_sim = only_sim
@@ -69,7 +56,7 @@ class Youtube_Transcript_DataLoader(Dataset):
 
         self.use_mil = use_mil
         self.sampled_use_mil = sampled_use_mil
-        if self.sampled_use_mil:        # sample from each video, has a high priority than use_mil.
+        if self.sampled_use_mil:        # sample from each video, has a higher priority than use_mil.
             self.use_mil = True
 
         if self.use_mil:
@@ -82,8 +69,8 @@ class Youtube_Transcript_DataLoader(Dataset):
             self.iter2video_pairslist_dict = {}
             iter_idx_mil_ = 0
             for video_id in video_id_list:
-                caption = self.caption[video_id]
-                n_caption = len(caption['start'])
+                data_dict = self.data_dict[video_id]
+                n_caption = len(data_dict['start'])
 
                 sub_list = []
                 if self.n_pair < 0 or self.n_pair == 1:
@@ -114,46 +101,38 @@ class Youtube_Transcript_DataLoader(Dataset):
     def __len__(self):
         return self.iter_num
 
-    def _mask_tokens(self, words, orig2token_tuple_list=None, chunk_positions=None):
+    def _mask_tokens(self, words):
         token_labels = []
         masked_tokens = words.copy()
 
-        if chunk_positions is not None and len(chunk_positions)>0:
-            token_labels = [-1] * len(masked_tokens)
-            for chunk_ind in chunk_positions:
-                start_, len_ = orig2token_tuple_list[chunk_ind]
-                if random.random() < 0.15:
-                    token_labels[start_:start_+len_] = [self.tokenizer.vocab[tk_] for tk_ in masked_tokens[start_:start_+len_]]
-                    masked_tokens[start_:start_+len_] = ["[MASK]"] * len_
-        else:
-            for token_id, token in enumerate(masked_tokens):
-                if token_id == 0 or token_id == len(masked_tokens) - 1:
-                    token_labels.append(-1)
-                    continue
-                prob = random.random()
-                if prob < 0.15:
-                    prob /= 0.15
-                    if prob < 0.8:
-                        masked_tokens[token_id] = "[MASK]"
-                    elif prob < 0.9:
-                        masked_tokens[token_id] = random.choice(list(self.tokenizer.vocab.items()))[0]
-                    try:
-                        token_labels.append(self.tokenizer.vocab[token])
-                    except KeyError:
-                        token_labels.append(self.tokenizer.vocab["[UNK]"])
-                else:
-                    token_labels.append(-1)
+        for token_id, token in enumerate(masked_tokens):
+            if token_id == 0 or token_id == len(masked_tokens) - 1:
+                token_labels.append(-1)
+                continue
+            prob = random.random()
+            if prob < 0.15:
+                prob /= 0.15
+                if prob < 0.8:
+                    masked_tokens[token_id] = "[MASK]"
+                elif prob < 0.9:
+                    masked_tokens[token_id] = random.choice(list(self.tokenizer.vocab.items()))[0]
+                try:
+                    token_labels.append(self.tokenizer.vocab[token])
+                except KeyError:
+                    token_labels.append(self.tokenizer.vocab["[UNK]"])
+            else:
+                token_labels.append(-1)
 
         return masked_tokens, token_labels
 
     def _get_text(self, video_id, n_pair_max, sub_ids=None, only_sim=False, enhance_vmodel=False):
-        caption = self.caption[video_id]
+        data_dict = self.data_dict[video_id]
 
         if self.use_mil:
             k = len(sub_ids)
             r_ind = sub_ids
         else:
-            n_caption = len(caption['start'])
+            n_caption = len(data_dict['start'])
             if n_pair_max == -1:
                 k = n_caption
                 r_ind = range(n_caption)
@@ -181,15 +160,9 @@ class Youtube_Transcript_DataLoader(Dataset):
 
         for i in range(k):
             ind = r_ind[i]
-            words, start_, end_ = self._get_single_transcript(caption, ind, with_long_context=self.with_long_context)
+            words, start_, end_ = self._get_single_transcript(data_dict, ind, with_long_context=self.with_long_context)
             caption_words = words.copy()
             starts[i], ends[i] = start_, end_
-
-            orig2token_tuple_list, chunk_positions = None, None
-            # # For entity mask
-            # orig_sentence, orig_to_token_map = generate_org_sentence_from_tokens(words.copy())
-            # four_tuples_ = generate_knoledge_candidate(orig_sentence, orig_to_token_map)
-            # _, orig2token_tuple_list, chunk_positions, _ = four_tuples_
 
             if enhance_vmodel:
                 words = []      # mask all input text
@@ -199,7 +172,7 @@ class Youtube_Transcript_DataLoader(Dataset):
             if len(words) > total_length_with_CLS:
                 words = words[:total_length_with_CLS]
             words = words + ["[SEP]"]
-
+            
             input_ids = self.tokenizer.convert_tokens_to_ids(words)
             input_mask = [1] * len(input_ids)
             segment_ids = [0] * len(input_ids)
@@ -216,17 +189,13 @@ class Youtube_Transcript_DataLoader(Dataset):
             pairs_segment[i] = np.array(segment_ids)
 
             if only_sim is False:
-                # # For entity mask : +1 due to [CLS]
-                # orig2token_tuple_list = [(s_+1, len_) for s_, len_ in orig2token_tuple_list if s_+len_ <= total_length_with_CLS]
-                # chunk_positions = [ind for ind in chunk_positions if ind<len(orig2token_tuple_list)]
-
                 # For generate captions
                 if len(caption_words) > total_length_with_CLS:
                     caption_words = caption_words[:total_length_with_CLS]
                 input_caption_words = ["[CLS]"] + caption_words
                 output_caption_words = caption_words + ["[SEP]"]
 
-                masked_tokens, token_labels = self._mask_tokens(words, orig2token_tuple_list, chunk_positions)
+                masked_tokens, token_labels = self._mask_tokens(words)
                 masked_token_ids = self.tokenizer.convert_tokens_to_ids(masked_tokens)
                 masked_input_caption_words, input_token_labels = self._mask_tokens(input_caption_words)
                 input_caption_words = masked_input_caption_words.copy()
@@ -259,16 +228,16 @@ class Youtube_Transcript_DataLoader(Dataset):
         return pairs_text, pairs_mask, pairs_segment, pairs_masked_text, pairs_token_labels, \
                pairs_input_caption_ids, pairs_decoder_mask, pairs_output_caption_ids, starts, ends
 
-    def _get_single_transcript(self, caption, ind, with_long_context=True):
+    def _get_single_transcript(self, data_dict, ind, with_long_context=True):
         start, end = ind, ind
-        words = self.tokenizer.tokenize(str(caption['text'][ind]))
-        diff = caption['end'][end] - caption['start'][start]
+        words = self.tokenizer.tokenize(str(data_dict['text'][ind]))
+        diff = data_dict['end'][end] - data_dict['start'][start]
         while with_long_context and (len(words) < self.min_words or diff < self.min_time):
-            if start > 0 and end < len(caption['end']) - 1:
-                next_words = self.tokenizer.tokenize(str(caption['text'][end + 1]))
-                prev_words = self.tokenizer.tokenize(str(caption['text'][start - 1]))
-                d1 = caption['end'][end + 1] - caption['start'][start]
-                d2 = caption['end'][end] - caption['start'][start - 1]
+            if start > 0 and end < len(data_dict['end']) - 1:
+                next_words = self.tokenizer.tokenize(str(data_dict['text'][end + 1]))
+                prev_words = self.tokenizer.tokenize(str(data_dict['text'][start - 1]))
+                d1 = data_dict['end'][end + 1] - data_dict['start'][start]
+                d2 = data_dict['end'][end] - data_dict['start'][start - 1]
                 if (self.min_time > 0 and d2 <= d1) or \
                     (self.min_time == 0 and len(next_words) <= len(prev_words)):
                     start -= 1
@@ -277,17 +246,17 @@ class Youtube_Transcript_DataLoader(Dataset):
                     end += 1
                     words.extend(next_words)
             elif start > 0:
-                words = self.tokenizer.tokenize(str(caption['text'][start - 1])) + words
+                words = self.tokenizer.tokenize(str(data_dict['text'][start - 1])) + words
                 start -= 1
-            elif end < len(caption['end']) - 1:
-                words.extend(self.tokenizer.tokenize(str(caption['text'][end + 1])))
+            elif end < len(data_dict['end']) - 1:
+                words.extend(self.tokenizer.tokenize(str(data_dict['text'][end + 1])))
                 end += 1
             else:
                 break
-            diff = caption['end'][end] - caption['start'][start]
-        return words, caption['start'][start], caption['end'][end]
+            diff = data_dict['end'][end] - data_dict['start'][start]
+        return words, data_dict['start'][start], data_dict['end'][end]
 
-    def _expand_video_slice(self, s, e, si, ei, fps, video_features, fps_k):
+    def _expand_video_slice(self, s, e, si, ei, fps, video_features):
         start = int(s[si] * fps)
         end = int(e[ei] * fps) + 1
 
@@ -311,12 +280,6 @@ class Youtube_Transcript_DataLoader(Dataset):
                 start, end = end, start
             video_slice = video_features[start:end]
 
-        # # Note: to alignment the features between 2d and 3d, due to the fps is different.
-        # if fps_k == "2d":
-        #     indices = sorted([idx for idx in range(len(video_slice)) if idx % 2 == 1]
-        #                      + [idx for idx in range(len(video_slice))])
-        #     video_slice = np.take(video_slice, indices, axis=0)
-
         if self.max_frames < video_slice.shape[0]:
             video_slice = video_slice[:self.max_frames]
 
@@ -326,32 +289,20 @@ class Youtube_Transcript_DataLoader(Dataset):
         video_mask = np.zeros((len(s), self.max_frames), dtype=np.long)
 
         max_video_length = [0] * len(s)
-        f_title = "feature_file_2D"
-        fps_k = "2d"
 
         video = np.zeros((len(s), self.max_frames, self.feature_size), dtype=np.float)
-        feature_file = os.path.join(self.feature_path[fps_k], self.csv[f_title].values[idx])
+        feature_file = os.path.join(self.features_path, self.csv["feature_file"].values[idx])
         try:
             video_features = np.load(feature_file)
 
             for i in range(len(s)):
-                # start = int(s[i] * self.fps[fps_k])
-                # end = int(e[i] * self.fps[fps_k]) + 1
-                # video_slice = video_features[start:end]
-                #
-                # if self.max_frames < video_slice.shape[0]:
-                #     video_slice = video_slice[:self.max_frames]
                 if len(video_features) < 1:
                     raise ValueError("{} is empty.".format(feature_file))
-                video_slice, start, end = self._expand_video_slice(s, e, i, i,
-                                                                   self.fps[fps_k], video_features, fps_k)
+                video_slice, start, end = self._expand_video_slice(s, e, i, i, self.feature_framerate, video_features)
                 slice_shape = video_slice.shape
                 max_video_length[i] = max_video_length[i] if max_video_length[i] > slice_shape[0] else slice_shape[0]
                 if len(video_slice) < 1:
                     pass
-                    # video_slice = video_features
-                    # if self.max_frames < video_slice.shape[0]:
-                    #     video_slice = video_slice[:self.max_frames]
                 else:
                     video[i][:slice_shape[0]] = video_slice
         except Exception as e:
@@ -387,7 +338,7 @@ class Youtube_Transcript_DataLoader(Dataset):
         return "%02d:%02d:%02d" % (h, m2, s)
 
     def __getitem__(self, feature_idx):
-        if self.sampled_use_mil:  # sample from each video, has a high priority than use_mil.
+        if self.sampled_use_mil:  # sample from each video, has a higher priority than use_mil.
             idx = feature_idx
             video_id = self.csv['video_id'].values[idx]
             sub_list = self.iter2video_pairslist_dict[video_id]

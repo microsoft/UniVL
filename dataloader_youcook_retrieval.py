@@ -7,52 +7,31 @@ from torch.utils.data import Dataset
 import pandas as pd
 import os
 import numpy as np
-import re
+import pickle
 import random
-import io
 
-class Youcook_Transcript_NoPair_DataLoader(Dataset):
+class Youcook_DataLoader(Dataset):
     """Youcook dataset loader."""
-
     def __init__(
             self,
             csv,
+            data_path,
             features_path,
-            caption,
             tokenizer,
-            min_time=10.0,
-            features_path_3D=None,
             feature_framerate=1.0,
-            feature_framerate_3D=24.0 / 16.0,
             max_words=30,
-            min_words=0,
-            n_pair=-1,          # -1 for test
-            pad_token="[PAD]",
             max_frames=100,
     ):
         """
         Args:
         """
         self.csv = pd.read_csv(csv)
-        self.features_path_2D = features_path
-        self.features_path_3D = features_path_3D
-        self.caption = caption
-        self.min_time = min_time
+        self.data_dict = pickle.load(open(data_path, 'rb'))
+        self.feature_dict = pickle.load(open(features_path, 'rb'))
         self.feature_framerate = feature_framerate
-        self.feature_framerate_3D = feature_framerate_3D
         self.max_words = max_words
         self.max_frames = max_frames
-        self.min_words = min_words
         self.tokenizer = tokenizer
-        self.n_pair = n_pair
-        self.pad_token = pad_token
-        self.fps = {'2d': feature_framerate, '3d': feature_framerate_3D}
-        self.feature_path = {'2d': features_path}
-        if features_path_3D != '':
-            self.feature_path['3d'] = features_path_3D
-
-        _feature_file = os.path.join(features_path, self.csv["feature_file_2D"].values[0])
-        self.feature_size = np.load(_feature_file).shape[-1]
 
         # Get iterator video ids
         video_id_list = [itm for itm in self.csv['video_id'].values]
@@ -61,8 +40,8 @@ class Youcook_Transcript_NoPair_DataLoader(Dataset):
         self.iter2video_pairs_dict = {}
         iter_idx_ = 0
         for video_id in video_id_list:
-            caption = self.caption[video_id]
-            n_caption = len(caption['start'])
+            data_dict = self.data_dict[video_id]
+            n_caption = len(data_dict['start'])
             for sub_id in range(n_caption):
                 self.iter2video_pairs_dict[iter_idx_] = (video_id, sub_id)
                 iter_idx_ += 1
@@ -71,9 +50,8 @@ class Youcook_Transcript_NoPair_DataLoader(Dataset):
         return len(self.iter2video_pairs_dict)
 
     def _get_text(self, video_id, sub_id):
-        caption = self.caption[video_id]
-        k = 1
-        r_ind = [sub_id]
+        data_dict = self.data_dict[video_id]
+        k, r_ind = 1, [sub_id]
 
         starts = np.zeros(k)
         ends = np.zeros(k)
@@ -83,18 +61,14 @@ class Youcook_Transcript_NoPair_DataLoader(Dataset):
         pairs_masked_text = np.zeros((k, self.max_words), dtype=np.long)
         pairs_token_labels = np.zeros((k, self.max_words), dtype=np.long)
 
-        pairs_input_caption_ids = np.zeros((k, self.max_words), dtype=np.long)
-        pairs_output_caption_ids = np.zeros((k, self.max_words), dtype=np.long)
-        pairs_decoder_mask = np.zeros((k, self.max_words), dtype=np.long)
-
         for i in range(k):
             ind = r_ind[i]
-            start_, end_ = caption['start'][ind], caption['end'][ind]
+            words = self.tokenizer.tokenize(data_dict['text'][ind])
+            start_, end_ = data_dict['start'][ind], data_dict['end'][ind]
             starts[i], ends[i] = start_, end_
-            total_length_with_CLS = self.max_words - 1
-            words = self.tokenizer.tokenize(caption['transcript'][ind])
 
             words = ["[CLS]"] + words
+            total_length_with_CLS = self.max_words - 1
             if len(words) > total_length_with_CLS:
                 words = words[:total_length_with_CLS]
             words = words + ["[SEP]"]
@@ -134,9 +108,9 @@ class Youcook_Transcript_NoPair_DataLoader(Dataset):
             # -----> Mask Language Model
 
             input_ids = self.tokenizer.convert_tokens_to_ids(words)
-            masked_token_ids = self.tokenizer.convert_tokens_to_ids(masked_tokens)
             input_mask = [1] * len(input_ids)
             segment_ids = [0] * len(input_ids)
+            masked_token_ids = self.tokenizer.convert_tokens_to_ids(masked_tokens)
             while len(input_ids) < self.max_words:
                 input_ids.append(0)
                 input_mask.append(0)
@@ -155,45 +129,17 @@ class Youcook_Transcript_NoPair_DataLoader(Dataset):
             pairs_masked_text[i] = np.array(masked_token_ids)
             pairs_token_labels[i] = np.array(token_labels)
 
-            # For generate captions
-            caption_words = self.tokenizer.tokenize(caption['text'][ind])
-            if len(caption_words) > total_length_with_CLS:
-                caption_words = caption_words[:total_length_with_CLS]
-            input_caption_words = ["[CLS]"] + caption_words
-            output_caption_words = caption_words + ["[SEP]"]
-
-            # For generate captions
-            input_caption_ids = self.tokenizer.convert_tokens_to_ids(input_caption_words)
-            output_caption_ids = self.tokenizer.convert_tokens_to_ids(output_caption_words)
-            decoder_mask = [1] * len(input_caption_ids)
-            while len(input_caption_ids) < self.max_words:
-                input_caption_ids.append(0)
-                output_caption_ids.append(0)
-                decoder_mask.append(0)
-            assert len(input_caption_ids) == self.max_words
-            assert len(output_caption_ids) == self.max_words
-            assert len(decoder_mask) == self.max_words
-
-            pairs_input_caption_ids[i] = np.array(input_caption_ids)
-            pairs_output_caption_ids[i] = np.array(output_caption_ids)
-            pairs_decoder_mask[i] = np.array(decoder_mask)
-
-        return pairs_text, pairs_mask, pairs_segment, pairs_masked_text, pairs_token_labels,\
-               pairs_input_caption_ids, pairs_decoder_mask, pairs_output_caption_ids, starts, ends
+        return pairs_text, pairs_mask, pairs_segment, pairs_masked_text, pairs_token_labels, starts, ends
 
     def _get_video(self, idx, s, e):
         video_mask = np.zeros((len(s), self.max_frames), dtype=np.long)
         max_video_length = [0] * len(s)
-        f_title = "feature_file_2D"
-        fps_k = "2d"
 
-        feature_file = os.path.join(self.feature_path[fps_k], self.csv[f_title].values[idx])
-        video_features = np.load(feature_file)
-
-        video = np.zeros((len(s), self.max_frames, self.feature_size), dtype=np.float)
+        video_features = self.feature_dict[self.csv["feature_file"].values[idx]]
+        video = np.zeros((len(s), self.max_frames, video_features.shape[-1]), dtype=np.float)
         for i in range(len(s)):
-            start = int(s[i] * self.fps[fps_k])
-            end = int(e[i] * self.fps[fps_k]) + 1
+            start = int(s[i] * self.feature_framerate)
+            end = int(e[i] * self.feature_framerate) + 1
             video_slice = video_features[start:end]
 
             if self.max_frames < video_slice.shape[0]:
@@ -202,8 +148,7 @@ class Youcook_Transcript_NoPair_DataLoader(Dataset):
             slice_shape = video_slice.shape
             max_video_length[i] = max_video_length[i] if max_video_length[i] > slice_shape[0] else slice_shape[0]
             if len(video_slice) < 1:
-                print("video_id: {}, start: {}, end: {}".format(feature_file, start, end))
-                # pass
+                print("video_id: {}, start: {}, end: {}".format(self.csv["video_id"].values[idx], start, end))
             else:
                 video[i][:slice_shape[0]] = video_slice
 
@@ -236,11 +181,9 @@ class Youcook_Transcript_NoPair_DataLoader(Dataset):
         idx = self.video_id2idx_dict[video_id]
 
         pairs_text, pairs_mask, pairs_segment, \
-        pairs_masked_text, pairs_token_labels, pairs_input_caption_ids, \
-        pairs_decoder_mask, pairs_output_caption_ids, starts, ends = self._get_text(video_id, sub_id)
+        pairs_masked_text, pairs_token_labels, starts, ends = self._get_text(video_id, sub_id)
 
         video, video_mask, masked_video, video_labels_index = self._get_video(idx, starts, ends)
 
         return pairs_text, pairs_mask, pairs_segment, video, video_mask, \
-               pairs_masked_text, pairs_token_labels, masked_video, video_labels_index, \
-               pairs_input_caption_ids, pairs_decoder_mask, pairs_output_caption_ids
+               pairs_masked_text, pairs_token_labels, masked_video, video_labels_index

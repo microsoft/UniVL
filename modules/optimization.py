@@ -110,8 +110,6 @@ class BertAdam(Optimizer):
         if closure is not None:
             loss = closure()
 
-        warned_for_t_total = False
-
         for group in self.param_groups:
             for p in group['params']:
                 if p.grad is None:
@@ -139,8 +137,10 @@ class BertAdam(Optimizer):
 
                 # Decay the first and second moment running average coefficient
                 # In-place operations to update the averages at the same time
-                next_m.mul_(beta1).add_(1 - beta1, grad)
-                next_v.mul_(beta2).addcmul_(1 - beta2, grad, grad)
+                # next_m.mul_(beta1).add_(1 - beta1, grad) --> pytorch 1.7
+                next_m.mul_(beta1).add_(grad, alpha=1 - beta1)
+                # next_v.mul_(beta2).addcmul_(1 - beta2, grad, grad) --> pytorch 1.7
+                next_v.mul_(beta2).addcmul_(grad, grad, value=1 - beta2)
                 update = next_m / (next_v.sqrt() + group['e'])
 
                 # Just adding the square of the weights to the loss function is *not*
@@ -157,13 +157,6 @@ class BertAdam(Optimizer):
                     schedule_fct = SCHEDULES[group['schedule']]
                     progress = state['step']/group['t_total']
                     lr_scheduled = group['lr'] * schedule_fct(progress, group['warmup'])
-                    # warning for exceeding t_total (only active with warmup_linear
-                    if group['schedule'] == "warmup_linear" and progress > 1. and not warned_for_t_total:
-                        logger.warning(
-                            "Training beyond specified 't_total' steps with schedule '{}'. Learning rate set to {}. "
-                            "Please set 't_total' of {} correctly.".format(group['schedule'], lr_scheduled, self.__class__.__name__))
-                        warned_for_t_total = True
-                    # end warning
                 else:
                     lr_scheduled = group['lr']
 
@@ -171,10 +164,5 @@ class BertAdam(Optimizer):
                 p.data.add_(-update_with_lr)
 
                 state['step'] += 1
-
-                # step_size = lr_scheduled * math.sqrt(bias_correction2) / bias_correction1
-                # No bias correction
-                # bias_correction1 = 1 - beta1 ** state['step']
-                # bias_correction2 = 1 - beta2 ** state['step']
 
         return loss
