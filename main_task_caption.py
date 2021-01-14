@@ -21,6 +21,7 @@ from modules.optimization import BertAdam
 from modules.beam import Beam
 from torch.utils.data import DataLoader
 from dataloader_youcook_caption import Youcook_Caption_DataLoader
+from dataloader_msrvtt_caption import MSRVTT_Caption_DataLoader
 from util import get_logger
 torch.distributed.init_process_group(backend="nccl")
 
@@ -248,6 +249,54 @@ def dataloader_youcook_test(args, tokenizer):
     if args.local_rank == 0:
         logger.info('YoucookII validation pairs: {}'.format(len(youcook_testset)))
     return dataloader_youcook, len(youcook_testset)
+
+def dataloader_msrvtt_train(args, tokenizer):
+    msrvtt_dataset = MSRVTT_Caption_DataLoader(
+        csv_path=args.train_csv,
+        json_path=args.data_path,
+        features_path=args.features_path,
+        max_words=args.max_words,
+        feature_framerate=args.feature_framerate,
+        tokenizer=tokenizer,
+        max_frames=args.max_frames,
+        split_type="train",
+    )
+
+    train_sampler = torch.utils.data.distributed.DistributedSampler(msrvtt_dataset)
+    dataloader = DataLoader(
+        msrvtt_dataset,
+        batch_size=args.batch_size // args.n_gpu,
+        num_workers=args.num_thread_reader,
+        pin_memory=False,
+        shuffle=(train_sampler is None),
+        sampler=train_sampler,
+        drop_last=True,
+    )
+
+    return dataloader, len(msrvtt_dataset), train_sampler
+
+def dataloader_msrvtt_test(args, tokenizer, split_type="test",):
+    msrvtt_testset = MSRVTT_Caption_DataLoader(
+        csv_path=args.val_csv,
+        json_path=args.data_path,
+        features_path=args.features_path,
+        max_words=args.max_words,
+        feature_framerate=args.feature_framerate,
+        tokenizer=tokenizer,
+        max_frames=args.max_frames,
+        split_type=split_type,
+    )
+
+    test_sampler = SequentialSampler(msrvtt_testset)
+    dataloader_msrvtt = DataLoader(
+        msrvtt_testset,
+        sampler=test_sampler,
+        batch_size=args.batch_size_val,
+        num_workers=args.num_thread_reader,
+        pin_memory=False,
+        drop_last=False,
+    )
+    return dataloader_msrvtt, len(msrvtt_testset)
 
 def convert_state_dict_type(state_dict, ttype=torch.FloatTensor):
     if isinstance(state_dict, dict):
@@ -549,8 +598,20 @@ def eval_epoch(args, model, test_dataloader, tokenizer, device, n_gpu, nlgEvalOb
         for ground_txt in all_caption_lists:
             writer.write(ground_txt + "\n")
 
+    if args.datatype == "msrvtt":
+        all_caption_lists = []
+        sentences_dict = test_dataloader.dataset.sentences_dict
+        video_sentences_dict = test_dataloader.dataset.video_sentences_dict
+        for idx in range(len(sentences_dict)):
+            video_id, _ = sentences_dict[idx]
+            sentences = video_sentences_dict[video_id]
+            all_caption_lists.append(sentences)
+        all_caption_lists = [list(itms) for itms in zip(*all_caption_lists)]
+    else:
+        all_caption_lists = [all_caption_lists]
+
     # Evaluate
-    metrics_nlg = nlgEvalObj.compute_metrics(ref_list=[all_caption_lists], hyp_list=all_result_lists)
+    metrics_nlg = nlgEvalObj.compute_metrics(ref_list=all_caption_lists, hyp_list=all_result_lists)
     logger.info(">>>  BLEU_1: {:.4f}, BLEU_2: {:.4f}, BLEU_3: {:.4f}, BLEU_4: {:.4f}".
                 format(metrics_nlg["Bleu_1"], metrics_nlg["Bleu_2"], metrics_nlg["Bleu_3"], metrics_nlg["Bleu_4"]))
     logger.info(">>>  METEOR: {:.4f}, ROUGE_L: {:.4f}, CIDEr: {:.4f}".format(metrics_nlg["METEOR"], metrics_nlg["ROUGE_L"], metrics_nlg["CIDEr"]))
@@ -560,6 +621,7 @@ def eval_epoch(args, model, test_dataloader, tokenizer, device, n_gpu, nlgEvalOb
 
 DATALOADER_DICT = {}
 DATALOADER_DICT["youcook"] = {"train":dataloader_youcook_train, "val":dataloader_youcook_test}
+DATALOADER_DICT["msrvtt"] = {"train":dataloader_msrvtt_train, "val":dataloader_msrvtt_test}
 
 def main():
     global logger

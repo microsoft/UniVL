@@ -78,7 +78,6 @@ class Youtube_DataLoader(Dataset):
                         sub_list.append([sub_id])
                 else:
                     sb_ls_ = list(range(n_caption))
-                    sb_st_ = set(sb_ls_)
                     if self.n_pair > n_caption:
                         sb_ls_ = sb_ls_ * (self.n_pair // n_caption + 1)
                         sb_ls_ = sb_ls_[:self.n_pair]

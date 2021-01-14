@@ -1,4 +1,12 @@
-The implementation of paper [**UniVL: A Unified Video and Language Pre-Training Model for Multimodal Understanding and Generation**](https://arxiv.org/abs/2002.06353).
+The implementation of paper [**UniVL: A Unified Video and Language Pre-Training Model for Multimodal Understanding and Generation**](https://arxiv.org/abs/2002.06353). 
+
+UniVL is a **video-language pretrain model**. It is designed with four modules and five objectives for both video language understanding and generation tasks.It is also a flexible model for most of the multimodal downstream tasks considering both efficiency and effectiveness.
+
+<p align="center">
+    <br>
+    <img src="./assets/imgs/UniVL_framework.png" width="500" />
+    <br>
+</p>
 
 # Preliminary
 Excute below scripts in the main folder firstly.
@@ -56,7 +64,7 @@ main_task_retrieval.py \
 --batch_size_val 200 --visual_num_hidden_layers 6 \
 --datatype ${DATATYPE} --init_model ${INIT_MODEL}
 ```
->The results are close to *R@1: 0.2269 - R@5: 0.5245 - R@10: 0.6586 - Median R: 5.0*
+The results are close to `R@1: 0.2269 - R@5: 0.5245 - R@10: 0.6586 - Median R: 5.0`
 
 2. Run retrieval task on **MSRVTT**
 ```
@@ -82,7 +90,8 @@ main_task_retrieval.py \
 --batch_size_val 200 --visual_num_hidden_layers 6 \
 --datatype ${DATATYPE} --expand_msrvtt_sentences --init_model ${INIT_MODEL}
 ```
->The results are close to *R@1: 0.2720 - R@5: 0.5570 - R@10: 0.6870 - Median R: 4.0*
+The results are close to 
+`R@1: 0.2720 - R@5: 0.5570 - R@10: 0.6870 - Median R: 4.0`
 
 ## Caption
 Run caption task on **YoucookII**
@@ -114,6 +123,38 @@ main_task_caption.py \
 ```
 BLEU_1: 0.4746, BLEU_2: 0.3355, BLEU_3: 0.2423, BLEU_4: 0.1779
 METEOR: 0.2261, ROUGE_L: 0.4697, CIDEr: 1.8631
+```
+
+Run caption task on **MSRVTT**
+
+```
+DATATYPE="msrvtt"
+TRAIN_CSV="data/msrvtt/MSRVTT_train.9k.csv"
+VAL_CSV="data/msrvtt/MSRVTT_JSFUSION_test.csv"
+DATA_PATH="data/msrvtt/MSRVTT_data.json"
+FEATURES_PATH="data/msrvtt/msrvtt_videos_features.pickle"
+INIT_MODEL="weight/univl.pretrained.bin"
+OUTPUT_ROOT="ckpts"
+
+python -m torch.distributed.launch --nproc_per_node=4 \
+main_task_caption.py \
+--do_train --num_thread_reader=4 \
+--epochs=5 --batch_size=128 \
+--n_display=100 \
+--train_csv ${TRAIN_CSV} \
+--val_csv ${VAL_CSV} \
+--data_path ${DATA_PATH} \
+--features_path ${FEATURES_PATH} \
+--output_dir ${OUTPUT_ROOT}/ckpt_msrvtt_caption --bert_model bert-base-uncased \
+--do_lower_case --lr 3e-5 --max_words 48 --max_frames 48 \
+--batch_size_val 32 --visual_num_hidden_layers 6 \
+--decoder_num_hidden_layers 3 --datatype ${DATATYPE} --stage_two \
+--init_model ${INIT_MODEL}
+```
+>The results are close to 
+```
+BLEU_1: 0.8051, BLEU_2: 0.6672, BLEU_3: 0.5342, BLEU_4: 0.4179
+METEOR: 0.2894, ROUGE_L: 0.6078, CIDEr: 0.5004
 ```
 
 # Pretrain on HowTo100M
@@ -179,6 +220,11 @@ If you find UniVL useful in your work, you can cite the following paper:
   year    = {2020},
 }
 ```
+
+# License
+This project is licensed under the license found in the LICENSE file in the root directory of this source tree.
+
+[Microsoft Open Source Code of Conduct](https://opensource.microsoft.com/codeofconduct)
 
 # Acknowledgments
 Our code is based on [pytorch-transformers v0.4.0](https://github.com/huggingface/transformers/tree/v0.4.0). We thank the authors for their wonderful open-source efforts.
