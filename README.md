@@ -201,7 +201,7 @@ ${MODEL_PATH}/main_pretrain.py \
 --data_path ${DATA_PATH}/caption.pickle \
 --visual_num_hidden_layers 6 --decoder_num_hidden_layers 3 \
 --gradient_accumulation_steps 60 \
---stage_two --pretrain_with_joint_sim --sampled_use_mil \
+--stage_two --sampled_use_mil \
 --pretrain_enhance_vmodal \
 --load_checkpoint --init_model ${INIT_MODEL}
 ```
