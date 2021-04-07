@@ -9,8 +9,6 @@ import numpy as np
 import random
 import os
 from metrics import compute_metrics
-import pickle
-import logging
 import time
 import argparse
 from modules.tokenization import BertTokenizer
@@ -19,9 +17,9 @@ from modules.modeling import UniVL
 from modules.optimization import BertAdam
 from torch.utils.data import DataLoader
 from util import parallel_apply, get_logger
-from dataloader_youcook_retrieval import Youcook_DataLoader
-from dataloader_msrvtt_retrieval import MSRVTT_DataLoader
-from dataloader_msrvtt_retrieval import MSRVTT_TrainDataLoader
+from dataloaders.dataloader_youcook_retrieval import Youcook_DataLoader
+from dataloaders.dataloader_msrvtt_retrieval import MSRVTT_DataLoader
+from dataloaders.dataloader_msrvtt_retrieval import MSRVTT_TrainDataLoader
 torch.distributed.init_process_group(backend="nccl")
 
 global logger
@@ -359,7 +357,7 @@ def train_epoch(epoch, args, model, train_dataloader, device, n_gpu, optimizer, 
                 logger.info("Epoch: %d/%s, Step: %d/%d, Lr: %s, Loss: %f, Time/step: %f", epoch + 1,
                             args.epochs, step + 1,
                             len(train_dataloader), "-".join([str('%.6f'%itm) for itm in sorted(list(set(optimizer.get_lr())))]),
-                            float(loss) * args.gradient_accumulation_steps,
+                            float(loss),
                             (time.time() - start_time) / (log_step * args.gradient_accumulation_steps))
                 start_time = time.time()
 

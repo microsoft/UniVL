@@ -10,14 +10,13 @@ import random
 import os
 from collections import OrderedDict
 import pickle
-import logging
 import time
 import argparse
 from modules.tokenization import BertTokenizer
 from modules.file_utils import PYTORCH_PRETRAINED_BERT_CACHE
 from modules.modeling import UniVL
 from modules.optimization import BertAdam
-from dataloader_howto100m import Youtube_DataLoader
+from dataloaders.dataloader_howto100m import Youtube_DataLoader
 from torch.utils.data import DataLoader
 from util import get_logger
 torch.distributed.init_process_group(backend="nccl")
@@ -350,7 +349,7 @@ def train_epoch(epoch, args, model, train_dataloader, device, n_gpu, optimizer, 
                 logger.info("Epoch: %d/%s, Step: %d/%d, Lr: %s, Loss: %f, Time/step: %f", epoch + 1,
                             args.epochs, step + 1,
                             len(train_dataloader), "-".join([str('%.6f'%itm) for itm in sorted(list(set(optimizer.get_lr())))]),
-                            float(loss) * args.gradient_accumulation_steps,
+                            float(loss),
                             (time.time() - start_time) / (log_step * args.gradient_accumulation_steps))
                 start_time = time.time()
 
