@@ -1,11 +1,10 @@
-*WORK IN PROGRESS ...*
 
 The implementation of paper [**UniVL: A Unified Video and Language Pre-Training Model for Multimodal Understanding and Generation**](https://arxiv.org/abs/2002.06353). 
 
 UniVL is a **video-language pretrain model**. It is designed with four modules and five objectives for both video language understanding and generation tasks. It is also a flexible model for most of the multimodal downstream tasks considering both efficiency and effectiveness.
 
 # Preliminary
-Excute below scripts in the main folder firstly.
+Execute below scripts in the main folder firstly. It will avoid *download conflict* when doing distributed pretrain.
 ```
 mkdir modules/bert-base-uncased
 cd modules/bert-base-uncased/
@@ -30,6 +29,33 @@ conda create -n py_univl python=3.6.9 tqdm boto3 requests pandas
 conda activate py_univl
 pip install torch==1.7.1+cu92
 pip install git+https://github.com/Maluuba/nlg-eval.git@master
+```
+
+# Pretrained Weight
+```
+mkdir -p ./weight
+wget -P ./weight [TBD]
+```
+
+# Prepare for Evaluation 
+Get data for retrieval and caption (with only video input) on YoucookII and MSRVTT.
+## YoucookII
+```
+mkdir -p data
+cd data
+wget [TBD]
+unzip youcookii.zip
+cd ..
+```
+Note: you can find `youcookii_data.no_transcript.pickle` in the zip file, which is a version without transcript. The transcript version will not be publicly avaliable due to possible legal issue. Thus, you need to replace `youcookii_data.pickle` with `youcookii_data.no_transcript.pickle` for youcook retrieval task and *caption with only video input* task. S3D feature can be found in `youcookii_videos_features.pickle`. The feature is extract as one 1024-dimension vector per second. More details can be found in [dataloaders](./dataloaders/README.md) and our paper.
+
+## MSRVTT
+```
+mkdir -p data
+cd data
+wget [TBD]
+unzip msrvtt.zip
+cd ..
 ```
 
 # Finetune on YoucookII
@@ -57,10 +83,14 @@ main_task_retrieval.py \
 --features_path ${FEATURES_PATH} \
 --output_dir ${OUTPUT_ROOT}/ckpt_youcook_retrieval --bert_model bert-base-uncased \
 --do_lower_case --lr 3e-5 --max_words 48 --max_frames 48 \
---batch_size_val 200 --visual_num_hidden_layers 6 \
+--batch_size_val 64 --visual_num_hidden_layers 6 \
 --datatype ${DATATYPE} --init_model ${INIT_MODEL}
 ```
-The results are close to `R@1: 0.2269 - R@5: 0.5245 - R@10: 0.6586 - Median R: 5.0`
+The results (FT-Joint) are close to `R@1: 0.2269 - R@5: 0.5245 - R@10: 0.6586 - Median R: 5.0`
+
+Plus `--train_sim_after_cross` to train align approach (FT-Align),
+
+The results (FT-Align) are close to `R@1: 0.2890 - R@5: 0.5760 - R@10: 0.7000 - Median R: 4.0`
 
 2. Run retrieval task on **MSRVTT**
 ```
@@ -83,11 +113,13 @@ main_task_retrieval.py \
 --features_path ${FEATURES_PATH} \
 --output_dir ${OUTPUT_ROOT}/ckpt_msrvtt_retrieval --bert_model bert-base-uncased \
 --do_lower_case --lr 5e-5 --max_words 48 --max_frames 48 \
---batch_size_val 200 --visual_num_hidden_layers 6 \
+--batch_size_val 64 --visual_num_hidden_layers 6 \
 --datatype ${DATATYPE} --expand_msrvtt_sentences --init_model ${INIT_MODEL}
 ```
-The results are close to 
+The results (FT-Joint) are close to 
 `R@1: 0.2720 - R@5: 0.5570 - R@10: 0.6870 - Median R: 4.0`
+
+Plus `--train_sim_after_cross` to train align approach (FT-Align)
 
 ## Caption
 Run caption task on **YoucookII**
@@ -119,6 +151,13 @@ main_task_caption.py \
 ```
 BLEU_1: 0.4746, BLEU_2: 0.3355, BLEU_3: 0.2423, BLEU_4: 0.1779
 METEOR: 0.2261, ROUGE_L: 0.4697, CIDEr: 1.8631
+```
+
+If using video only as input (`youcookii_data.no_transcript.pickle`),
+>The results are close to 
+```
+BLEU_1: 0.3921, BLEU_2: 0.2522, BLEU_3: 0.1655, BLEU_4: 0.1117
+METEOR: 0.1769, ROUGE_L: 0.4049, CIDEr: 1.2725
 ```
 
 Run caption task on **MSRVTT**
@@ -223,4 +262,4 @@ This project is licensed under the license found in the LICENSE file in the root
 [Microsoft Open Source Code of Conduct](https://opensource.microsoft.com/codeofconduct)
 
 # Acknowledgments
-Our code is based on [pytorch-transformers v0.4.0](https://github.com/huggingface/transformers/tree/v0.4.0). We thank the authors for their wonderful open-source efforts.
+Our code is based on [pytorch-transformers v0.4.0](https://github.com/huggingface/transformers/tree/v0.4.0) and [howto100m](https://github.com/antoine77340/howto100m). We thank the authors for their wonderful open-source efforts.
