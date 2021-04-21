@@ -3,6 +3,8 @@ The implementation of paper [**UniVL: A Unified Video and Language Pre-Training 
 
 UniVL is a **video-language pretrain model**. It is designed with four modules and five objectives for both video language understanding and generation tasks. It is also a flexible model for most of the multimodal downstream tasks considering both efficiency and effectiveness.
 
+![alt text](assets/imgs/UniVL_framework.jpg)
+
 # Preliminary
 Execute below scripts in the main folder firstly. It will avoid *download conflict* when doing distributed pretrain.
 ```
