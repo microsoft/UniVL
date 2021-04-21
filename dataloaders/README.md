@@ -74,4 +74,4 @@ Note: The video_id and feature_file are the same for the consistency and our his
 
 ## Preprocess on MSRVTT
 The s3d feature extraction is the same as HowTo100M introduced above.
-The data can be downloaded in: [TBD]
+The data can be downloaded in: https://github.com/microsoft/UniVL/releases/download/v0/msrvtt.zip

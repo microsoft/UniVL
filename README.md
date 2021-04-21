@@ -34,7 +34,7 @@ pip install git+https://github.com/Maluuba/nlg-eval.git@master
 # Pretrained Weight
 ```
 mkdir -p ./weight
-wget -P ./weight [TBD]
+wget -P ./weight https://github.com/microsoft/UniVL/releases/download/v0/univl.pretrained.bin
 ```
 
 # Prepare for Evaluation 
@@ -43,7 +43,7 @@ Get data for retrieval and caption (with only video input) on YoucookII and MSRV
 ```
 mkdir -p data
 cd data
-wget [TBD]
+wget https://github.com/microsoft/UniVL/releases/download/v0/youcookii.zip
 unzip youcookii.zip
 cd ..
 ```
@@ -53,7 +53,7 @@ Note: you can find `youcookii_data.no_transcript.pickle` in the zip file, which 
 ```
 mkdir -p data
 cd data
-wget [TBD]
+wget https://github.com/microsoft/UniVL/releases/download/v0/msrvtt.zip
 unzip msrvtt.zip
 cd ..
 ```
