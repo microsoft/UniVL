@@ -1,4 +1,4 @@
-torch==1.7.0
+torch==2.2.0
 tqdm
 boto3
 requests
